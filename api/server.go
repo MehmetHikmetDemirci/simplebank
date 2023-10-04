@@ -20,7 +20,6 @@ type Server struct {
 
 func NewServer(config util.Config, store db.Store) (*Server, error) {
 	tokenMaker, err := token.NewPasetoMaker(config.TokenSymmetricKey)
-
 	if err != nil {
 		return nil, fmt.Errorf("cannot create token maker: %w", err)
 	}
@@ -35,6 +34,7 @@ func NewServer(config util.Config, store db.Store) (*Server, error) {
 	}
 
 	server.setupRouter()
+
 	return server, nil
 }
 
@@ -44,19 +44,24 @@ func (server *Server) setupRouter() {
 	router.POST("/users", server.createUser)
 	router.POST("/users/login", server.loginUser)
 
-	router.POST("/accounts", server.createAccount)
-	router.GET("/accounts/:id", server.getAccount)
-	router.GET("/accounts", server.listAccount)
-	router.POST("/transfers", server.createTransfer)
+	authRoutes := router.Group("/").Use(authMiddleware(server.tokenMaker))
+
+	authRoutes.POST("/accounts", server.createAccount)
+	authRoutes.GET("/accounts/:id", server.getAccount)
+	authRoutes.GET("/accounts", server.listAccount)
+
+	authRoutes.PATCH("/accounts/:id", server.AddAccountBalance)
+	authRoutes.DELETE("/accounts/:id", server.deleteAccount)
+
+	authRoutes.POST("/transfers", server.createTransfer)
 
 	server.router = router
-
 }
 
-func (server *Server) Start(adress string) error {
-	return server.router.Run(adress)
+func (server *Server) Start(address string) error {
+	return server.router.Run(address)
 }
 
-func errorResponse(err error) gin.H {
+func errorResponse(err error) gin.H { //  to convert error into key-value object, so that gin can serialize it to JSON before returning to client
 	return gin.H{"error": err.Error()}
 }

@@ -2,72 +2,79 @@ package api
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"
 	db "github.com/techschool/simplebank/db/sqlc"
+	"github.com/techschool/simplebank/token"
 )
 
-type createAccountRequest struct {
-	Owner    string `json:"owner" binding:"required"`
+type CreateAccountRequest struct {
 	Currency string `json:"currency" binding:"required,currency"`
 }
 
 func (server *Server) createAccount(ctx *gin.Context) {
-	var req createAccountRequest
-	if err := ctx.ShouldBindJSON(&req); err != nil {
+	var req CreateAccountRequest
+
+	if err := ctx.ShouldBindJSON(&req); err != nil { // to check is data valid or not
 		ctx.JSON(http.StatusBadRequest, errorResponse(err))
 		return
 	}
 
+	authPayload := ctx.MustGet(authorizationPayloadKey).(*token.Payload)
+
 	arg := db.CreateAccountParams{
-		Owner:    req.Owner,
-		Currency: req.Currency,
+		Owner:    authPayload.Username,
 		Balance:  0,
+		Currency: req.Currency,
 	}
 
 	account, err := server.store.CreateAccount(ctx, arg)
-
 	if err != nil {
-		if pqErr, ok := err.(*pq.Error); ok {
+		if pqErr, ok := err.(*pq.Error); ok { // convert the err from postgress to pq.Errortype // of conversion is ok then ...
 			switch pqErr.Code.Name() {
-			case "foreign_key_violation", "unique_violation":
+			case "foreign_key_violation", "unique violation":
 				ctx.JSON(http.StatusForbidden, errorResponse(err))
-				return
 			}
 		}
 		ctx.JSON(http.StatusInternalServerError, errorResponse(err))
 		return
 	}
-
 	ctx.JSON(http.StatusOK, account)
 }
 
-type getAccountRequest struct {
-	ID int64 `uri:"id" binding:"required,min=1"`
+type GetAccountRequest struct {
+	ID int64 `binding:"required,min=1" uri:"id"`
 }
 
 func (server *Server) getAccount(ctx *gin.Context) {
-	var req getAccountRequest
-	if err := ctx.ShouldBindUri(&req); err != nil {
+	var req GetAccountRequest
+
+	if err := ctx.ShouldBindUri(&req); err != nil { //  to tell the gin the URi parameter which is ID
 		ctx.JSON(http.StatusBadRequest, errorResponse(err))
 		return
 	}
 
 	account, err := server.store.GetAccount(ctx, req.ID)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if err == sql.ErrNoRows { // ondai row jok degen
 			ctx.JSON(http.StatusNotFound, errorResponse(err))
 			return
 		}
-
 		ctx.JSON(http.StatusInternalServerError, errorResponse(err))
 		return
 	}
 
-	ctx.JSON(http.StatusOK, account)
+	authPayload := ctx.MustGet(authorizationPayloadKey).(*token.Payload)
+	if authPayload.Username != account.Owner {
+		err = errors.New("account doesn't belong to the authenticated user")
+		ctx.JSON(http.StatusUnauthorized, errorResponse(err))
+		return
+	}
 
+	ctx.JSON(http.StatusOK, account)
 }
 
 type listAccountRequest struct {
@@ -77,12 +84,16 @@ type listAccountRequest struct {
 
 func (server *Server) listAccount(ctx *gin.Context) {
 	var req listAccountRequest
-	if err := ctx.ShouldBindQuery(&req); err != nil {
+
+	if err := ctx.ShouldBindQuery(&req); err != nil { // to get data from query string
 		ctx.JSON(http.StatusBadRequest, errorResponse(err))
 		return
 	}
 
+	authPayload := ctx.MustGet(authorizationPayloadKey).(*token.Payload)
+
 	arg := db.ListAccountsParams{
+		Owner:  authPayload.Username,
 		Limit:  req.PageSize,
 		Offset: (req.PageID - 1) * req.PageSize,
 	}
@@ -92,7 +103,52 @@ func (server *Server) listAccount(ctx *gin.Context) {
 		ctx.JSON(http.StatusInternalServerError, errorResponse(err))
 		return
 	}
-
 	ctx.JSON(http.StatusOK, accounts)
+}
 
+func (server *Server) deleteAccount(ctx *gin.Context) {
+	var req GetAccountRequest
+
+	if err := ctx.ShouldBindUri(&req); err != nil { //  to tell the gin the URi parameter which is ID
+		ctx.JSON(http.StatusBadRequest, errorResponse(err))
+		return
+	}
+
+	err := server.store.DeleteAccount(ctx, req.ID)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, errorResponse(err))
+		return
+	}
+	ctx.JSON(http.StatusOK, err)
+}
+
+type UpdateAccountRequest struct {
+	Amount int64 `json:"balance"`
+}
+
+func (server *Server) AddAccountBalance(ctx *gin.Context) {
+	var req GetAccountRequest
+	var req2 UpdateAccountRequest
+
+	if err := ctx.ShouldBindUri(&req); err != nil { //  to tell the gin the URi parameter which is ID
+		ctx.JSON(http.StatusBadRequest, errorResponse(err))
+		return
+	}
+
+	if err := ctx.ShouldBindJSON(&req2); err != nil { //  to tell the gin the URi parameter which is ID
+		ctx.JSON(http.StatusBadRequest, errorResponse(err))
+		return
+	}
+
+	arg := db.AddAccountBalanceParams{
+		Amount: req2.Amount,
+		ID:     req.ID,
+	}
+
+	account, err := server.store.AddAccountBalance(ctx, arg)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, errorResponse(err))
+		return
+	}
+	ctx.JSON(http.StatusOK, account)
 }
